@@ -123,6 +123,41 @@ parameters:
       pt_BR: "Período de validade da assinatura, unidade de segundos (opcional, o padrão é 3600 segundos)"
     llm_description: "Signature validity period ,unit is second (optional, default to 3,600 seconds)"
     form: llm
+  - name: storage_class
+    type: select
+    required: false
+    label:
+      en_US: Storage Class
+      zh_Hans: 存储类型
+      pt_BR: Classe de Armazenamento
+    human_description:
+      en_US: "The OSS storage class for the uploaded objects (optional, Standard by default)"
+      zh_Hans: "上传对象的OSS存储类型（可选，默认为标准存储Standard）"
+      pt_BR: "A classe de armazenamento do OSS para os objetos (opcional, Standard por padrão)"
+    llm_description: "The OSS storage class for the uploaded objects: 'Standard', 'IA', 'Archive' or 'ColdArchive' (optional, Standard by default)"
+    form: llm
+    options:
+      - label:
+          en_US: "Standard"
+          zh_Hans: "标准存储"
+          pt_BR: "Standard"
+        value: "Standard"
+      - label:
+          en_US: "Infrequent Access"
+          zh_Hans: "低频访问"
+          pt_BR: "Infrequent Access"
+        value: "IA"
+      - label:
+          en_US: "Archive"
+          zh_Hans: "归档存储"
+          pt_BR: "Archive"
+        value: "Archive"
+      - label:
+          en_US: "Cold Archive"
+          zh_Hans: "冷归档存储"
+          pt_BR: "Cold Archive"
+        value: "ColdArchive"
+    default: "Standard"
 extra:
   python:
     source: tools/multi_upload_files.py

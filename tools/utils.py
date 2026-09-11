@@ -187,5 +187,32 @@ def get_file_extension(file: Any) -> str:
     # 3. 如果仍然无法获取，尝试从文件内容类型推断
     if hasattr(file, 'content_type') and file.content_type:
         return get_extension_from_content_type(file.content_type)
-    
+
     return ".dat"
+
+
+# OSS 支持的存储类型（键为小写，值为 OSS API 要求的写法）
+STORAGE_CLASSES = {
+    'standard': 'Standard',
+    'ia': 'IA',
+    'archive': 'Archive',
+    'coldarchive': 'ColdArchive',
+}
+
+# 默认存储类型：标准存储
+DEFAULT_STORAGE_CLASS = 'Standard'
+
+
+def get_storage_headers(storage_class: Any) -> dict:
+    """
+    构建指定存储类型的上传请求头
+
+    Args:
+        storage_class: 存储类型，如 'Standard'、'IA'，大小写不敏感；
+                       非法值一律回退为标准存储，避免上传失败
+
+    Returns:
+        请求头字典，如 {'x-oss-storage-class': 'Standard'}
+    """
+    canonical = STORAGE_CLASSES.get(str(storage_class or '').strip().lower())
+    return {'x-oss-storage-class': canonical or DEFAULT_STORAGE_CLASS}
