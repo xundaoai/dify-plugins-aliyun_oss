@@ -1,5 +1,10 @@
+import hashlib
+import hmac
 import os
+import re
+from datetime import datetime, timezone
 from typing import Any, Union
+from urllib.parse import quote as _url_quote
 
 # 内容类型到扩展名的映射表（带点号）
 CONTENT_TYPE_TO_EXTENSION_WITH_DOT = {
@@ -224,3 +229,120 @@ def get_upload_headers(storage_class: Any) -> dict:
         'x-oss-storage-class': canonical or DEFAULT_STORAGE_CLASS,
         'Cache-Control': DEFAULT_CACHE_CONTROL,
     }
+
+
+# ==================== 预签名 URL：UTC 自然日网格（与 ai-friend-server Go 侧对齐） ====================
+
+# OSS V4 预签名 URL 的有效期上限（秒）
+OSS_V4_MAX_EXPIRES = 604800
+
+# 网格额外加成：一个自然日，保证「UTC 日末最差时刻起至少还剩 sign_expired 秒」
+_DAY_GRID_EXTRA_SECONDS = 86400
+
+# sign_expired 参数缺省/非法时的回退值（与工具 yaml 宣称的默认一致）
+_DEFAULT_SIGN_EXPIRED = 3600
+
+_ENDPOINT_SCHEME_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+.\-]*://')
+_REGION_RE = re.compile(r'^oss-([a-z0-9-]+?)(?:-internal)?\.aliyuncs\.com$')
+
+
+def _endpoint_host(endpoint):
+    """endpoint → host：剥掉 scheme 与路径，兼容 http(s):// 前缀写法。"""
+    ep = str(endpoint or '').strip()
+    m = _ENDPOINT_SCHEME_RE.match(ep)
+    if m:
+        ep = ep[m.end():]
+    return ep.split('/', 1)[0].strip()
+
+
+def _region_from_endpoint(endpoint):
+    """标准 endpoint → region（oss-cn-beijing.aliyuncs.com → cn-beijing，兼容 -internal）。
+
+    自定义域名推不出 region 时返回 None（V4 签名必须携带 region，调用方回退旧签名）。
+    """
+    m = _REGION_RE.match(_endpoint_host(endpoint))
+    return m.group(1) if m else None
+
+
+def _coerce_sign_expired(sign_expired):
+    """LLM 表单参数 → 合法秒数：空/非数字/非正数一律回退默认 3600。"""
+    try:
+        value = int(sign_expired)
+    except (TypeError, ValueError):
+        return _DEFAULT_SIGN_EXPIRED
+    return value if value > 0 else _DEFAULT_SIGN_EXPIRED
+
+
+def presign_get_url_day_grid(access_key_id, access_key_secret, bucket_name, object_key,
+                             endpoint, sign_expired=_DEFAULT_SIGN_EXPIRED,
+                             use_https=True, sign_time=None):
+    """生成签名时刻固定在 UTC 自然日零点的 V4 预签名 GET URL。
+
+    与后端 ai-friend-server 的 internal/utils/oss_presign.go（presignGetURLV4
+    + GeneratePresignedURL 网格化）逐字节对齐：
+    - 签名时刻固定为当前 UTC 自然日零点（可用 sign_time 注入便于测试），
+      同一天内同 key 重复生成的 URL 完全一致——浏览器 HTTP 缓存以完整 URL
+      （含签名 query）为键，URL 稳定即命中缓存，重签不再回源；
+    - 有效期 = 网格零点起 sign_expired + 86400 秒（上限 604800），即从当前
+      时刻起最少仍有 sign_expired 秒，一天内不失效；
+    - 两边使用相同 AK/endpoint 时，本函数与 Go 侧签出的 URL 字节级相同
+      （golden 向量见 test_utils_presign.py）。
+
+    不支持 STS 临时凭证（无 x-oss-security-token 参与签名）。
+    endpoint 推不出 region（自定义域名）时返回 None，调用方回退 oss2.sign_url。
+    """
+    region = _region_from_endpoint(endpoint)
+    if not region:
+        return None
+
+    seconds = _coerce_sign_expired(sign_expired)
+    expires = min(seconds + _DAY_GRID_EXTRA_SECONDS, OSS_V4_MAX_EXPIRES)
+
+    host = f"{bucket_name}.{_endpoint_host(endpoint)}"
+    if sign_time is None:
+        sign_time = datetime.now(timezone.utc)
+    sign_time = sign_time.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    str_day = sign_time.strftime('%Y%m%d')
+    sign_date = sign_time.strftime('%Y%m%dT%H%M%SZ')
+
+    def esc(value):
+        # 等价 Go url.QueryEscape + "+"→"%20"：unreserved（字母数字 -_.~）外全部 %XX
+        return _url_quote(str(value), safe='')
+
+    # 规范化请求：GET / 规范化URI（斜杠字面量）/ 规范化查询串 / 空头 / 空附加头 / UNSIGNED-PAYLOAD
+    canonical_resource = f"/{bucket_name}/{_url_quote(object_key, safe='/')}"
+    credential = f"{access_key_id}/{str_day}/{region}/oss/aliyun_v4_request"
+    canonical_query = "&".join([
+        "x-oss-credential=" + esc(credential),
+        "x-oss-date=" + esc(sign_date),
+        "x-oss-expires=" + esc(expires),
+        "x-oss-signature-version=" + esc("OSS4-HMAC-SHA256"),
+    ])
+    canonical_request = ("GET\n" + canonical_resource + "\n" + canonical_query
+                         + "\n\n\n" + "UNSIGNED-PAYLOAD")
+
+    scope = f"{str_day}/{region}/oss/aliyun_v4_request"
+    string_to_sign = ("OSS4-HMAC-SHA256\n" + sign_date + "\n" + scope + "\n"
+                      + hashlib.sha256(canonical_request.encode('utf-8')).hexdigest())
+
+    def _hmac(key, data):
+        return hmac.new(key, data.encode('utf-8'), hashlib.sha256).digest()
+
+    signing_key = _hmac(("aliyun_v4" + access_key_secret).encode('utf-8'), str_day)
+    signing_key = _hmac(signing_key, region)
+    signing_key = _hmac(signing_key, "oss")
+    signing_key = _hmac(signing_key, "aliyun_v4_request")
+    signature = _hmac(signing_key, string_to_sign).hex()
+
+    # 最终 URL：查询参数按 x-oss-credential/date/expires/signature/signature-version 排序（与 Go 侧一致），
+    # 路径中斜杠保持 %2F（OSS 服务端按规范化形式归一化后验签，两种写法等价且可用）
+    query = "&".join([
+        "x-oss-credential=" + esc(credential),
+        "x-oss-date=" + esc(sign_date),
+        "x-oss-expires=" + esc(expires),
+        "x-oss-signature=" + signature,
+        "x-oss-signature-version=" + esc("OSS4-HMAC-SHA256"),
+    ])
+    scheme = 'https' if use_https else 'http'
+    return f"{scheme}://{host}/{_url_quote(object_key, safe='')}?{query}"

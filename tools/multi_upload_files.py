@@ -8,7 +8,7 @@ import oss2
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 from dify_plugin.file.file import File
-from .utils import get_file_type, get_file_extension, get_upload_headers
+from .utils import get_file_type, get_file_extension, get_upload_headers, presign_get_url_day_grid
 
 class MultiUploadFilesTool(Tool):
     # 最大支持的文件数量
@@ -253,10 +253,20 @@ class MultiUploadFilesTool(Tool):
                         protocol = 'https' if credentials.get('use_https', True) else 'http'
                         file_url = f"{protocol}://{credentials['bucket']}.{credentials['endpoint']}/{object_key}"
                     else:
-                        file_url = bucket.sign_url("GET", object_key, expires=signed_expired)
-                        if credentials.get('use_https', True):
-                            # 只替换协议头，避免把 https:// 误替换成 httpss://
-                            file_url = file_url.replace("http://", "https://", 1)
+                        # UTC 自然日网格 V4 签名：同一天内同 key 重签 URL 不变、一天内不失效，
+                        # 浏览器按完整 URL 缓存可命中；与后端 Go 侧签出的 URL 字节级一致
+                        file_url = presign_get_url_day_grid(
+                            credentials['access_key_id'], credentials['access_key_secret'],
+                            credentials['bucket'], object_key, credentials['endpoint'],
+                            sign_expired=signed_expired,
+                            use_https=credentials.get('use_https', True),
+                        )
+                        if not file_url:
+                            # 自定义域名等推不出 region 的 endpoint，回退 oss2 现签（URL 每次变化）
+                            file_url = bucket.sign_url("GET", object_key, expires=signed_expired)
+                            if credentials.get('use_https', True):
+                                # 只替换协议头，避免把 https:// 误替换成 httpss://
+                                file_url = file_url.replace("http://", "https://", 1)
                     
                     results.append({
                         "status": "success",
