@@ -202,17 +202,25 @@ STORAGE_CLASSES = {
 # 默认存储类型：标准存储
 DEFAULT_STORAGE_CLASS = 'Standard'
 
+# 上传对象统一携带的浏览器缓存策略：内容不可变（key 含时间戳），
+# 允许客户端缓存 7 天；桶为私有读，故用 private 而非 public
+DEFAULT_CACHE_CONTROL = 'private, max-age=604800'
 
-def get_storage_headers(storage_class: Any) -> dict:
+
+def get_upload_headers(storage_class: Any) -> dict:
     """
-    构建指定存储类型的上传请求头
+    构建上传请求头（存储类型 + 浏览器缓存策略）
 
     Args:
         storage_class: 存储类型，如 'Standard'、'IA'，大小写不敏感；
                        非法值一律回退为标准存储，避免上传失败
 
     Returns:
-        请求头字典，如 {'x-oss-storage-class': 'Standard'}
+        请求头字典，如 {'x-oss-storage-class': 'Standard',
+                       'Cache-Control': 'private, max-age=604800'}
     """
     canonical = STORAGE_CLASSES.get(str(storage_class or '').strip().lower())
-    return {'x-oss-storage-class': canonical or DEFAULT_STORAGE_CLASS}
+    return {
+        'x-oss-storage-class': canonical or DEFAULT_STORAGE_CLASS,
+        'Cache-Control': DEFAULT_CACHE_CONTROL,
+    }

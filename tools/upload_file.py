@@ -8,7 +8,7 @@ import oss2
 from dify_plugin import Tool
 from dify_plugin.entities.tool import ToolInvokeMessage
 from dify_plugin.file.file import File
-from .utils import get_file_type, get_file_extension, get_storage_headers
+from .utils import get_file_type, get_file_extension, get_upload_headers
 
 class UploadFileTool(Tool):
     def _invoke(self, tool_parameters: dict[str, Any]) -> Generator[ToolInvokeMessage]:
@@ -110,7 +110,7 @@ class UploadFileTool(Tool):
             signed = parameters.get('signed',False)
             signed_expired = parameters.get('sign_expired',3600)
             # 存储类型（Standard/IA/Archive/ColdArchive，默认Standard，非法值回退Standard）
-            storage_headers = get_storage_headers(parameters.get('storage_class'))
+            upload_headers = get_upload_headers(parameters.get('storage_class'))
             
             # 验证必填参数
             if not file:
@@ -228,7 +228,7 @@ class UploadFileTool(Tool):
                     # 获取文件内容
                     file_content = file.blob
                     # 上传文件内容
-                    bucket.put_object(object_key, file_content, headers=storage_headers)
+                    bucket.put_object(object_key, file_content, headers=upload_headers)
                 # 尝试作为普通文件对象处理
                 elif hasattr(file, 'read'):
                     # 重置文件指针到开头
@@ -237,11 +237,11 @@ class UploadFileTool(Tool):
                     # 读取文件内容
                     file_content = file.read()
                     # 上传文件内容
-                    bucket.put_object(object_key, file_content, headers=storage_headers)
+                    bucket.put_object(object_key, file_content, headers=upload_headers)
                 else:
                     # 尝试作为文件路径处理
                     if isinstance(file, (str, bytes, os.PathLike)):
-                        bucket.put_object_from_file(object_key, file, headers=storage_headers)
+                        bucket.put_object_from_file(object_key, file, headers=upload_headers)
                     else:
                         # 如果是File对象但没有read方法，尝试获取其内容
                         raise ValueError(f"Unsupported file type: {type(file)}. Expected file-like object or path.")
